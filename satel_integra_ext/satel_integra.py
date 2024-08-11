@@ -4,7 +4,6 @@
 
 import asyncio
 import logging
-from threading import RLock
 from enum import Enum, unique
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,14 +78,20 @@ def generate_query(command):
     return data
 
 
-def partition_bytes(partition_list):
-        ret_val = 0
-        for position in partition_list:
-            if position >= 32:
-                raise IndexError()
-            ret_val = ret_val | (1 << (position - 1))
+def output_bytes(output):
+    _LOGGER.debug("output_bytes")
+    output_no = 1 << output - 1
+    return output_no.to_bytes(32, 'little')
 
-        return ret_val.to_bytes(4, 'little')
+
+def partition_bytes(partition_list):
+    ret_val = 0
+    for position in partition_list:
+        if position >= 32:
+            raise IndexError()
+        ret_val = ret_val | (1 << (position - 1))
+
+    return ret_val.to_bytes(4, 'little')
 
 
 @unique
@@ -132,11 +137,7 @@ class AsyncSatel:
         self._partitions = partitions
         self._command_status_event = asyncio.Event()
         self._command_status = False
-        self._EMPTY_BYTES = (0).to_bytes(32, 'little')
-        self._outputs_lock = RLock()
-        self._outputs_to_set = self._EMPTY_BYTES
-        self._outputs_to_clear = self._EMPTY_BYTES
-        self._outputs_change_in_progress: bool = False
+        self._command_queue = asyncio.Queue()
 
         self._message_handlers[b'\x00'] = self._zone_violated
         self._message_handlers[b'\x17'] = self._output_changed
@@ -161,6 +162,7 @@ class AsyncSatel:
             AlarmState.TRIGGERED, msg)
         self._message_handlers[b'\x14'] = lambda msg: self._armed(
             AlarmState.TRIGGERED_FIRE, msg)
+        self._message_handlers[b'\xEE'] = self._device_info
 
     @property
     def connected(self):
@@ -191,14 +193,6 @@ class AsyncSatel:
             b'\x7F\x01\xDC\x99\x80\x00\x04\x00\x00\x00\x00\x00\x00')
 
         await self._send_data(data)
-        resp = await self._read_data()
-
-        if resp is None:
-            _LOGGER.warning("Start monitoring - no data!")
-            return
-
-        if resp[1:2] != b'\xFF':
-            _LOGGER.warning("Monitoring not accepted.")
 
     def _zone_violated(self, msg):
 
@@ -261,8 +255,10 @@ class AsyncSatel:
     #     except asyncio.TimeoutError:
     #         _LOGGER.warning("Timeout waiting for reponse from Satel!")
     #     return self._command_status
-
     async def _send_data(self, data):
+        self._command_queue.put_nowait(data)
+
+    async def _send_data_internal(self, data):
         _LOGGER.debug("-- Sending data --")
         print_hex(data)
         _LOGGER.debug("-- ------------- --")
@@ -270,17 +266,33 @@ class AsyncSatel:
 
         if not self._writer:
             _LOGGER.warning("Ignoring data because we're disconnected!")
-            return
         try:
             self._writer.write(data)
             await self._writer.drain()
-            self._outputs_change_in_progress = True
+            return True
         except Exception as e:
             _LOGGER.warning(
                 "Exception during sending data: %s.", e)
             self._writer = None
             self._reader = None
             return False
+
+    async def sender_worker(self):
+        """Keeps sending commands from the queue and
+           waiting for anwers"""
+        while not self.closed:
+            data = await self._command_queue.get()
+            try:
+                if await self._send_data_internal(data):
+                    await asyncio.wait_for(asyncio.shield(self._command_status_event.wait()), timeout=10)
+                    self._command_status_event.clear()
+                self._command_queue.task_done()
+            except TimeoutError:
+                self._command_queue.task_done()
+                _LOGGER.warning("Timeout while waiting for confirmation")
+            except Exception:
+                self._command_queue.task_done()
+                _LOGGER.warning("Error while waiting for confirmation")
 
     async def arm(self, code, partition_list, mode=0):
         """Send arming command to the alarm. Modes allowed: from 0 till 3."""
@@ -329,51 +341,16 @@ class AsyncSatel:
               + 16/32 bytes - output list
               If function is accepted, function result can be
               checked by observe the system state """
-        _LOGGER.debug("Schedule turn on, output: %s, code: %s", output_id, code)
-
-        with self._outputs_lock:
-            bit = int.from_bytes((1 << output_id - 1).to_bytes(32, 'little'), 'little')
-            res = (int.from_bytes(self._outputs_to_set if state else self._outputs_to_clear, 'little') | bit).to_bytes(32, 'little')
-            if state:
-                self._outputs_to_set = res
-            else:
-                self._outputs_to_clear = res
-
-            if res != 0:
-                asyncio.create_task(self.sync_output_states(code))
-
-    async def sync_output_states(self, code):
-        _LOGGER.debug("Send commands to turn on/off outputs")
+        _LOGGER.debug("Turn on, output: %s, code: %s", output_id, code)
         while len(code) < 16:
             code += 'F'
 
         code_bytes = bytearray.fromhex(code)
-
-        with self._outputs_lock:
-            '''if command execution in progress'''
-            if self._outputs_change_in_progress:
-                '''schedule another attempt'''
-                asyncio.create_task(self.sync_output_states(code))
-            elif not self._outputs_to_set.__eq__(self._EMPTY_BYTES):
-                output_bytes = self._outputs_to_set
-                self._outputs_to_set = self._EMPTY_BYTES
-                mode_command = 0x88
-
-                data = generate_query(mode_command.to_bytes(1, 'big') +
-                                    code_bytes +
-                                    output_bytes)
-                await self._send_data(data)
-            elif not self._outputs_to_clear.__eq__(self._EMPTY_BYTES):
-                output_bytes = self._outputs_to_clear
-                self._outputs_to_clear = self._EMPTY_BYTES
-                mode_command = 0x89
-
-                data = generate_query(mode_command.to_bytes(1, 'big') +
-                                    code_bytes +
-                                    output_bytes)
-                await self._send_data(data)
-            else:
-                _LOGGER.debug("No need to send anything.")
+        mode_command = 0x88 if state else 0x89
+        data = generate_query(mode_command.to_bytes(1, 'big') +
+                              code_bytes +
+                              output_bytes(output_id))
+        await self._send_data(data)
 
     def _armed(self, mode, msg):
         partitions = list_set_bits(msg, 4)
@@ -392,7 +369,6 @@ class AsyncSatel:
 
         try:
             data = await self._reader.readuntil(b'\xFE\x0D')
-            self._outputs_change_in_progress = False
             _LOGGER.debug("-- Receiving data --")
             print_hex(data)
             _LOGGER.debug("-- ------------- --")
@@ -421,6 +397,11 @@ class AsyncSatel:
             # Command to read status of the alarm
             data = generate_query(b'\xEE\x01\x01')
             await self._send_data(data)
+
+    def _device_info(self, msg):
+        """Dummy handler for keep_alive responses"""
+        self._command_status = None
+        self._command_status_event.set()
 
     async def _update_status(self):
         _LOGGER.debug("Wait...")
@@ -503,6 +484,8 @@ def demo(host, port):
     loop.run_until_complete(stl.connect())
     loop.create_task(stl.arm("3333", (1,)))
     loop.create_task(stl.disarm("3333",(1,)))
+    loop.create_task(stl.sender_worker())
+
     loop.create_task(stl.keep_alive())
     loop.create_task(stl.monitor_status())
 
