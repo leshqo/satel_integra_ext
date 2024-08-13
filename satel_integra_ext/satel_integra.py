@@ -141,27 +141,17 @@ class AsyncSatel:
 
         self._message_handlers[b'\x00'] = self._zone_violated
         self._message_handlers[b'\x17'] = self._output_changed
-        self._message_handlers[b'\x0A'] = lambda msg: self._armed(
-            AlarmState.ARMED_MODE0, msg)
-        self._message_handlers[b'\x2A'] = lambda msg: self._armed(
-            AlarmState.ARMED_MODE1, msg)
-        self._message_handlers[b'\x0B'] = lambda msg: self._armed(
-            AlarmState.ARMED_MODE2, msg)
-        self._message_handlers[b'\x0C'] = lambda msg: self._armed(
-            AlarmState.ARMED_MODE3, msg)
-        self._message_handlers[b'\x09'] = lambda msg: self._armed(
-            AlarmState.ARMED_SUPPRESSED, msg)
-        self._message_handlers[b'\x0E'] = lambda msg: self._armed(
-            AlarmState.ENTRY_TIME, msg)
-        self._message_handlers[b'\x0F'] = lambda msg: self._armed(
-            AlarmState.EXIT_COUNTDOWN_OVER_10, msg)
-        self._message_handlers[b'\x10'] = lambda msg: self._armed(
-            AlarmState.EXIT_COUNTDOWN_UNDER_10, msg)
+        self._message_handlers[b'\x0A'] = lambda msg: self._armed(AlarmState.ARMED_MODE0, msg)
+        self._message_handlers[b'\x2A'] = lambda msg: self._armed(AlarmState.ARMED_MODE1, msg)
+        self._message_handlers[b'\x0B'] = lambda msg: self._armed(AlarmState.ARMED_MODE2, msg)
+        self._message_handlers[b'\x0C'] = lambda msg: self._armed(AlarmState.ARMED_MODE3, msg)
+        self._message_handlers[b'\x09'] = lambda msg: self._armed(AlarmState.ARMED_SUPPRESSED, msg)
+        self._message_handlers[b'\x0E'] = lambda msg: self._armed(AlarmState.ENTRY_TIME, msg)
+        self._message_handlers[b'\x0F'] = lambda msg: self._armed(AlarmState.EXIT_COUNTDOWN_OVER_10, msg)
+        self._message_handlers[b'\x10'] = lambda msg: self._armed(AlarmState.EXIT_COUNTDOWN_UNDER_10, msg)
         self._message_handlers[b'\xEF'] = lambda msg: self._command_result(msg)
-        self._message_handlers[b'\x13'] = lambda msg: self._armed(
-            AlarmState.TRIGGERED, msg)
-        self._message_handlers[b'\x14'] = lambda msg: self._armed(
-            AlarmState.TRIGGERED_FIRE, msg)
+        self._message_handlers[b'\x13'] = lambda msg: self._armed(AlarmState.TRIGGERED, msg)
+        self._message_handlers[b'\x14'] = lambda msg: self._armed(AlarmState.TRIGGERED_FIRE, msg)
         self._message_handlers[b'\xEE'] = self._device_info
 
     @property
@@ -246,15 +236,6 @@ class AsyncSatel:
         self._command_status_event.set()
         return status
 
-    # async def send_and_wait_for_answer(self, data):
-    #     """Send given data and wait for confirmation from Satel"""
-    #     await self._send_data(data)
-    #     try:
-    #         await asyncio.wait_for(self._command_status_event.wait(),
-    #                                timeout=5)
-    #     except asyncio.TimeoutError:
-    #         _LOGGER.warning("Timeout waiting for reponse from Satel!")
-    #     return self._command_status
     async def _send_data(self, data):
         self._command_queue.put_nowait(data)
 
@@ -278,8 +259,7 @@ class AsyncSatel:
             return False
 
     async def sender_worker(self):
-        """Keeps sending commands from the queue and
-           waiting for anwers"""
+        """Keeps sending commands from the queue and waiting for answers"""
         while not self.closed:
             data = await self._command_queue.get()
             try:
@@ -338,9 +318,7 @@ class AsyncSatel:
         """Send output turn on command to the alarm."""
         """0x88   outputs on
               + 8 bytes - user code
-              + 16/32 bytes - output list
-              If function is accepted, function result can be
-              checked by observe the system state """
+              + 16/32 bytes - output list"""
         _LOGGER.debug("Turn on, output: %s, code: %s", output_id, code)
         while len(code) < 16:
             code += 'F'

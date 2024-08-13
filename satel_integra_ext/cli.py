@@ -4,7 +4,7 @@
 
 import logging
 import click
-from satel_integra_ext import demo
+from satel_integra_ext.satel_integra import demo
 
 
 @click.command()
