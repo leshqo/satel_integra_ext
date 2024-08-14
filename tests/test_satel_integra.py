@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """Tests for `satel_integra` package."""
+import asyncio
 
 import pytest
 
@@ -10,7 +11,7 @@ import pytest
 # from satel_integra import cli
 from unittest import TestCase
 from satel_integra_ext.satel_integra import \
-    checksum, generate_query, verify_and_strip
+    checksum, SatelCommandQueue, SatelMessage, SatelCommand, AsyncSatel, AlarmState
 
 # import unittest
 # from unittest.mock import MagicMock
@@ -38,41 +39,42 @@ def test_command_line_interface():
     pass
 
 
-test_frames = \
-    {"Version query": b'\xFE\xFE\x7E\xD8\x60\xFE\x0D',
-     "Version response": b'\xFE\xFE\x7E\x03\x31\x31\x36\x32\x30\x31\x36\x30'
-                         b'\x37\x31\x35\x00\x00\x02\x48\xFE\x0D',
-     "Time query": b'\xFE\xFE\x1a\xd7\xfc\xFE\x0D',
-     "Time response": b'\xFE\xFE\x1A\x20\x17\x08\x07\x23\x59\x22\x00\xA3\x34'
-                      b'\x70\xFE\x0D',
-     "Name query": b'\xFE\xFE\xee\x00\x01\x63\x0a\xfe\x0d',
-     "Name response": b'\xFE\xFE\xEE\x00\x01\x00\x53\x74\x72\x65\x66\x61\x20'
-                      b'\x20\x31\x20\x20\x20\x20\x20\x20\x20\x5D\x20\xFE\x0D',
-     "Start monitoring arm state":
-         b'\xfe\xfe\x7f\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xa7'
-         b'\xa9\xfe\x0d',
-     "Response OK to start monitoring": b'\xfe\xfe\xef\xff\x4f\xa9\xfe\x0d',
-     "First partition armed": b'\xfe\xfe\x09\x01\x00\x00\x00\x7d\xac\xfe\x0d',
-     "First partition disarmed":
-         b'\xfe\xfe\x09\x00\x00\x00\x00\x7d\xb4\xfe\x0d',
-     "Output status query": b'\xfe\xfe\x17\xd7\xf9\xfe\x0d',
-     "Output status active 16 and 256":
-         b'\xfe\xfe\x17\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-         b'\x00\x00\x80\x22\xd8\xfe\x0d',
-     "Arm0 query": b'\xfe\xfe\x80\x11\x11\xff\xff\xff\xff\xff\xff\x01\x00'
-                   b'\x00\x00\x15\x40\xfe\x0d',
-     "Arm0 response": b'\xfe\xfe\xef\x00\x4e\xaa\xfe\x0d',
-     "Armed partitions query": b'\xfe\xfe\x0a\xd7\xec\xfe\x0d',
-     "Armed partitions response":
-         b'\xfe\xfe\x0a\x01\x00\x00\x00\x7d\xbc\xfe\x0d',
-     "Active outputs query": b'\xfe\xfe\x17\xd7\xf9\xfe\x0d',
-     "Active outputs response":
-         b'\xfe\xfe\x17\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-         b'\x00\x00\x80\x22\xd8\xfe\x0d',
-     "New data query": b'\xfe\xfe\x7f\xd8\x61\xfe\x0d',
-     "New data response": b'\xfe\xfe\x7f\xfe\xf0\xfb\x7f\xfb\xff\xff\xcc\xfe'
-                          b'\x0d',
-     }
+test_frames = {
+    "Version query": b'\xFE\xFE\x7E\xD8\x60\xFE\x0D',
+    "Version response": b'\xFE\xFE\x7E\x03\x31\x31\x36\x32\x30\x31\x36\x30'
+                        b'\x37\x31\x35\x00\x00\x02\x48\xFE\x0D',
+    "Time query": b'\xFE\xFE\x1a\xd7\xfc\xFE\x0D',
+    "Time response": b'\xFE\xFE\x1A\x20\x17\x08\x07\x23\x59\x22\x00\xA3\x34'
+                     b'\x70\xFE\x0D',
+    "Name query": b'\xFE\xFE\xee\x00\x01\x63\x0a\xfe\x0d',
+    "Name response": b'\xFE\xFE\xEE\x00\x01\x00\x53\x74\x72\x65\x66\x61\x20'
+                     b'\x20\x31\x20\x20\x20\x20\x20\x20\x20\x5D\x20\xFE\x0D',
+    "Start monitoring arm state":
+        b'\xfe\xfe\x7f\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xa7'
+        b'\xa9\xfe\x0d',
+    "Response OK to start monitoring": b'\xfe\xfe\xef\xff\x4f\xa9\xfe\x0d',
+    "First partition armed": b'\xfe\xfe\x09\x01\x00\x00\x00\x7d\xac\xfe\x0d',
+    "First partition disarmed":
+        b'\xfe\xfe\x09\x00\x00\x00\x00\x7d\xb4\xfe\x0d',
+    "Output status query": b'\xfe\xfe\x17\xd7\xf9\xfe\x0d',
+    "Output status active 16 and 256":
+        b'\xfe\xfe\x17\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+        b'\x00\x00\x80\x22\xd8\xfe\x0d',
+    "Arm0 query": b'\xfe\xfe\x80\x11\x11\xff\xff\xff\xff\xff\xff\x01\x00'
+                  b'\x00\x00\x15\x40\xfe\x0d',
+    "Arm0 response": b'\xfe\xfe\xef\x00\x4e\xaa\xfe\x0d',
+    "Armed partitions query": b'\xfe\xfe\x0a\xd7\xec\xfe\x0d',
+    "Armed partitions response":
+        b'\xfe\xfe\x0a\x01\x00\x00\x00\x7d\xbc\xfe\x0d',
+    "Active outputs query": b'\xfe\xfe\x17\xd7\xf9\xfe\x0d',
+    "Active outputs response":
+        b'\xfe\xfe\x17\x00\x80\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+        b'\x00\x00\x80\x22\xd8\xfe\x0d',
+    "New data query": b'\xfe\xfe\x7f\xd8\x61\xfe\x0d',
+    "New data response": b'\xfe\xfe\x7f\xfe\xf0\xfb\x7f\xfb\xff\xff\xcc\xfe'
+                         b'\x0d',
+    "Zone 2 violated": b'\xfe\xfe\x00\x02\x00\x00\x00\x7d\x0f\xfe\x0d',
+}
 
 
 class TestSatel(TestCase):
@@ -101,25 +103,86 @@ class TestSatel(TestCase):
 
     def test_version_query_generation(self):
         """Test if version query frame is generated as reference."""
-        result = generate_query(b'\x7E')
+        result = SatelMessage(SatelCommand.INTEGRA_VERSION).encode_frame()
         self.assertEqual(result, test_frames["Version query"])
 
     def test_time_query_generation(self):
         """Test if time query frame is generated as reference."""
-        result = generate_query(b'\x1a')
+        result = SatelMessage(SatelCommand.RTC_AND_STATUS).encode_frame()
         self.assertEqual(result, test_frames["Time query"])
 
     def test_name_query_generation(self):
         """Test if object name query frame is generated as reference."""
         device_type = b'\x01'
         devicenumber = b'\x00'
-        result = generate_query(b'\xEE' + devicenumber + device_type)
+        result = SatelMessage(SatelCommand.DEVICE_INFO, devicenumber + device_type).encode_frame()
         self.assertEqual(result, test_frames["Name query"])
 
-    def test_verify_and_strip(self):
-        """Test if verify and strip works ok on reference data."""
+    def test_decode_frame(self):
+        """Test if frame decoding works ok on reference data."""
         for data in test_frames.values():
-            verify_and_strip(data)
+            SatelMessage.decode_frame(data)
+
+    def test_queue_merging(self):
+        """Test SatelCommandQueue merging commands."""
+        async def test():
+            queue = SatelCommandQueue()
+
+            code = "1234"
+            partitions = [1, 3, 14, 32]
+            outputs = [1, 4, 15, 128]
+
+            # Add commands to queue, arm, output, arm, output, etc
+            for i in range(len(partitions)):
+                await queue.put(SatelMessage(cmd=SatelCommand.CMD_ARM_MODE_0, code=code, partitions=[partitions[i]]))
+                await queue.put(SatelMessage(cmd=SatelCommand.CMD_OUTPUT_ON, code=code, outputs=outputs[i]))
+
+            # Get merged arm command
+            msg = await queue.get()
+            self.assertEqual(msg.list_set_bits(8, 4), partitions)
+
+            # Get merged output command
+            msg = await queue.get()
+            self.assertEqual(msg.list_set_bits(8, 16), outputs)
+
+        asyncio.run(test())
+
+    def test_frame_dispatching(self):
+        satel = AsyncSatel(None, None, None, monitored_outputs=[1, 2, 128])
+        satel._dispatch_frame(bytearray(test_frames["Version response"]))
+        satel._dispatch_frame(bytearray(test_frames["Time response"]))
+        satel._dispatch_frame(bytearray(test_frames["Name response"]))
+
+
+    def test_frame_dispatching_outputs(self):
+        satel = AsyncSatel(None, None, None, monitored_outputs=[1, 2, 128])
+        ouputs_status = None
+
+        def output_changed_status(status):
+            nonlocal ouputs_status
+            ouputs_status = status
+
+        satel._output_changed_callback = output_changed_status
+        satel._dispatch_frame(bytearray(test_frames["Active outputs response"]))
+        self.assertEqual(satel.violated_outputs, [16, 128])
+        self.assertEqual( {'outputs': {1: 0, 2: 0, 128: 1}}, ouputs_status)
+
+    def test_frame_dispatching_partitions(self):
+        satel = AsyncSatel(None, None, None, monitored_zones=[1, 2])
+        zones_violated_status = None
+
+        def zone_changed_callback(status):
+            nonlocal zones_violated_status
+            zones_violated_status = status
+
+        satel._zone_changed_callback = zone_changed_callback
+        satel._dispatch_frame(bytearray(test_frames["First partition armed"]))
+        self.assertEqual(satel.partition_states, {AlarmState.ARMED_SUPPRESSED: [1]})
+        satel._dispatch_frame(bytearray(test_frames["First partition disarmed"]))
+        self.assertEqual(satel.partition_states, {AlarmState.ARMED_SUPPRESSED: []})
+        satel._dispatch_frame(bytearray(test_frames["Zone 2 violated"]))
+        self.assertEqual({'zones': {1: 0, 2: 1}}, zones_violated_status)
+
 
 # def test_get_version(self):
 #     """Connect and retreive Satel Integra Version. Test bases

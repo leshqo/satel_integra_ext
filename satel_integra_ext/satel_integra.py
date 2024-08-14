@@ -3,7 +3,9 @@
 """Main module."""
 
 import asyncio
+import collections
 import logging
+from binascii import hexlify
 from enum import Enum, unique
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,78 +22,124 @@ def checksum(command):
     return crc
 
 
-def print_hex(data):
-    """Debugging method to print out frames in hex."""
-    hex_msg = ""
-    for c in data:
-        hex_msg += "\\x" + format(c, "02x")
-    _LOGGER.debug(hex_msg)
-
-
-def verify_and_strip(resp):
-    """Verify checksum and strip header and footer of received frame."""
-    if resp[0:2] != b'\xFE\xFE':
-        _LOGGER.error("Houston, we got problem:")
-        print_hex(resp)
-        raise Exception("Wrong header - got %X%X" % (resp[0], resp[1]))
-    if resp[-2:] != b'\xFE\x0D':
-        raise Exception("Wrong footer - got %X%X" % (resp[-2], resp[-1]))
-    output = resp[2:-2].replace(b'\xFE\xF0', b'\xFE')
-
-    c = checksum(bytearray(output[0:-2]))
-
-    if (256 * output[-2:-1][0] + output[-1:][0]) != c:
-        raise Exception("Wrong checksum - got %d expected %d" % (
-            (256 * output[-2:-1][0] + output[-1:][0]), c))
-
-    return output[0:-2]
-
-
-def list_set_bits(r, expected_length):
-    """Return list of positions of bits set to one in given data.
-
-    This method is used to read e.g. violated zones. They are marked by ones
-    on respective bit positions - as per Satel manual.
-    """
-    set_bit_numbers = []
-    bit_index = 0x1
-    assert (len(r) == expected_length + 1)
-
-    for b in r[1:]:
-        for i in range(8):
-            if ((b >> i) & 1) == 1:
-                set_bit_numbers.append(bit_index)
-            bit_index += 1
-
-    return set_bit_numbers
-
-
-def generate_query(command):
-    """Add header, checksum and footer to command data."""
-    data = bytearray(command)
-    c = checksum(data)
-    data.append(c >> 8)
-    data.append(c & 0xFF)
-    data = data.replace(b'\xFE', b'\xFE\xF0')
-
-    data = bytearray.fromhex("FEFE") + data + bytearray.fromhex("FE0D")
-    return data
-
-
 def output_bytes(output):
-    _LOGGER.debug("output_bytes")
-    output_no = 1 << output - 1
-    return output_no.to_bytes(32, 'little')
+    return (1 << output - 1).to_bytes(32, 'little')
 
 
 def partition_bytes(partition_list):
     ret_val = 0
     for position in partition_list:
-        if position >= 32:
+        if position > 32:
             raise IndexError()
         ret_val = ret_val | (1 << (position - 1))
 
     return ret_val.to_bytes(4, 'little')
+
+
+def code_bytes(code):
+    return bytearray.fromhex(code.ljust(16, 'F'))
+
+
+
+class SatelCommand(Enum):
+    ZONE_VIOLATED = 0x00
+    ARMED_MODE0 = 0x0A
+    ARMED_MODE1 = 0x2A
+    ARMED_MODE2 = 0x0B
+    ARMED_MODE3 = 0x0C
+    ARMED_SUPPRESSED = 0x09
+    ENTRY_TIME = 0x0E
+    EXIT_COUNTDOWN_OVER_10 = 0x0F
+    EXIT_COUNTDOWN_UNDER_10 = 0x10
+    RTC_AND_STATUS = 0x1A
+    DEVICE_INFO = 0xEE
+    RESULT = 0xEF
+    TRIGGERED = 0x13
+    TRIGGERED_FIRE = 0x14
+    OUTPUT_STATE = 0x17
+    INTEGRA_VERSION = 0x7E
+
+    CMD_ARM_MODE_0 = 0x80
+    CMD_ARM_MODE_1 = 0x81
+    CMD_ARM_MODE_2 = 0x82
+    CMD_ARM_MODE_3 = 0x83
+    CMD_DISARM = 0x84
+    CMD_CLEAR_ALARM = 0x85
+    CMD_ZONE_BYPASS = 0x86
+    CMD_OUTPUT_ON = 0x88
+    CMD_OUTPUT_OFF = 0x89
+    CMD_START_MONITORING = 0X7F
+
+    def bytearray(self):
+        return bytearray(self.value.to_bytes(1, 'little'))
+
+    def __add__(self, other):
+        return SatelCommand(self.value + other)
+
+    def __str__(self):
+        return self.name
+
+
+class SatelMessage(object):
+
+    def __init__(self, cmd, msg_data:bytearray=None, code=None, partitions=None, outputs=None):
+        self.cmd = cmd
+        self.msg_data = msg_data if msg_data else bytearray()
+        if code:
+            self.msg_data += bytearray.fromhex(code.ljust(16, 'F'))
+        if partitions:
+            self.msg_data += partition_bytes(partitions)
+        if outputs:
+            self.msg_data += output_bytes(outputs)
+
+    def compare_cmd(self, other):
+        return self.cmd == other.cmd
+
+    def merge(self, other):
+        """ Perform bitwise OR on two byte arrays into the first array."""
+        for i in range(len(self.msg_data)):
+            self.msg_data[i] |= other.msg_data[i]
+
+    def __str__(self):
+        return "SatelMessage %s %s" % (self.cmd, hexlify(self.msg_data))
+
+    def encode_frame(self):
+        data = self.cmd.bytearray() + self.msg_data
+        c = checksum(data)
+        data.append(c >> 8)
+        data.append(c & 0xFF)
+        data = data.replace(b'\xFE', b'\xFE\xF0')
+        data = bytearray.fromhex("FEFE") + data + bytearray.fromhex("FE0D")
+        return data
+
+    def list_set_bits(self, offset, length):
+        length = min(length, len(self.msg_data)-offset)
+        """Return list of positions of bits (indexed from 1) set to one in given data. """
+        return [by*8+bi+1 for by in range(length) for bi in range(8) if (self.msg_data[by+offset] >> bi) & 1]
+
+    @staticmethod
+    def decode_frame(resp):
+        """Verify checksum and strip header and footer of received frame."""
+        if resp[0:2] != b'\xFE\xFE':
+            _LOGGER.error("Houston, we got problem: %s", hexlify(resp))
+            raise Exception("Wrong header - got %X%X" % (resp[0], resp[1]))
+        if resp[-2:] != b'\xFE\x0D':
+            raise Exception("Wrong footer - got %X%X" % (resp[-2], resp[-1]))
+        output = resp[2:-2].replace(b'\xFE\xF0', b'\xFE')
+
+        c = checksum(bytearray(output[0:-2]))
+
+        if (256 * output[-2:-1][0] + output[-1:][0]) != c:
+            raise Exception("Wrong checksum - got %d expected %d" % (
+                (256 * output[-2:-1][0] + output[-1:][0]), c))
+
+        cmd, data = output[0], output[1:-2]
+
+        try:
+            return SatelMessage(SatelCommand(cmd), data)
+        except ValueError:
+            _LOGGER.info("Ignoring unknown frame: %s", cmd)
+            return None
 
 
 @unique
@@ -111,6 +159,37 @@ class AlarmState(Enum):
     DISARMED = 10
 
 
+class SatelCommandQueue(asyncio.Queue):
+    """
+    Queue for sending commands to Satel Integra alarm system and group (merge) multiple calls
+    to the same command into one.
+    """
+
+    def _init(self, maxsize=0):
+        self._queue = collections.deque()
+
+    def _get(self) -> SatelMessage:
+        msg = self._queue.popleft()
+        _LOGGER.debug("command queue: get   %s", msg)
+        return msg
+
+    def _put(self, msg: SatelMessage):
+        if not isinstance(msg, SatelMessage):
+            raise ValueError("Only SatelMessage objects are allowed, got %s" % type(msg))
+
+        # find the same command in the queue
+        exising_msg = next(filter(msg.compare_cmd, self._queue), None)
+        if exising_msg:
+            _LOGGER.debug("command queue: merge %s", msg)
+            exising_msg.merge(msg)
+        else:
+            _LOGGER.debug("command queue: put   %s", msg)
+            self._queue.append(msg)
+
+    def clear(self):
+        self._queue.clear()
+
+
 class AsyncSatel:
     """Asynchronous interface to talk to Satel Integra alarm system."""
 
@@ -120,7 +199,6 @@ class AsyncSatel:
         self._host = host
         self._port = port
         self._loop = loop
-        self._message_handlers = {}
         self._monitored_zones = monitored_zones
         self.violated_zones = []
         self._monitored_outputs = monitored_outputs
@@ -137,22 +215,30 @@ class AsyncSatel:
         self._partitions = partitions
         self._command_status_event = asyncio.Event()
         self._command_status = False
-        self._command_queue = asyncio.Queue()
+        self._command_queue = SatelCommandQueue()
 
-        self._message_handlers[b'\x00'] = self._zone_violated
-        self._message_handlers[b'\x17'] = self._output_changed
-        self._message_handlers[b'\x0A'] = lambda msg: self._armed(AlarmState.ARMED_MODE0, msg)
-        self._message_handlers[b'\x2A'] = lambda msg: self._armed(AlarmState.ARMED_MODE1, msg)
-        self._message_handlers[b'\x0B'] = lambda msg: self._armed(AlarmState.ARMED_MODE2, msg)
-        self._message_handlers[b'\x0C'] = lambda msg: self._armed(AlarmState.ARMED_MODE3, msg)
-        self._message_handlers[b'\x09'] = lambda msg: self._armed(AlarmState.ARMED_SUPPRESSED, msg)
-        self._message_handlers[b'\x0E'] = lambda msg: self._armed(AlarmState.ENTRY_TIME, msg)
-        self._message_handlers[b'\x0F'] = lambda msg: self._armed(AlarmState.EXIT_COUNTDOWN_OVER_10, msg)
-        self._message_handlers[b'\x10'] = lambda msg: self._armed(AlarmState.EXIT_COUNTDOWN_UNDER_10, msg)
-        self._message_handlers[b'\xEF'] = lambda msg: self._command_result(msg)
-        self._message_handlers[b'\x13'] = lambda msg: self._armed(AlarmState.TRIGGERED, msg)
-        self._message_handlers[b'\x14'] = lambda msg: self._armed(AlarmState.TRIGGERED_FIRE, msg)
-        self._message_handlers[b'\xEE'] = self._device_info
+        self._message_handlers = {
+            SatelCommand.RESULT:                    self._command_result,
+            SatelCommand.ZONE_VIOLATED:             self._zone_violated,
+            SatelCommand.OUTPUT_STATE:              self._output_changed,
+            SatelCommand.DEVICE_INFO:               self._device_info,
+            SatelCommand.ARMED_MODE0:               lambda msg: self._armed(AlarmState.ARMED_MODE0, msg),
+            SatelCommand.ARMED_MODE1:               lambda msg: self._armed(AlarmState.ARMED_MODE1, msg),
+            SatelCommand.ARMED_MODE2:               lambda msg: self._armed(AlarmState.ARMED_MODE2, msg),
+            SatelCommand.ARMED_MODE3:               lambda msg: self._armed(AlarmState.ARMED_MODE3, msg),
+            SatelCommand.ARMED_SUPPRESSED:          lambda msg: self._armed(AlarmState.ARMED_SUPPRESSED, msg),
+            SatelCommand.ENTRY_TIME:                lambda msg: self._armed(AlarmState.ENTRY_TIME, msg),
+            SatelCommand.EXIT_COUNTDOWN_OVER_10:    lambda msg: self._armed(AlarmState.EXIT_COUNTDOWN_OVER_10, msg),
+            SatelCommand.EXIT_COUNTDOWN_UNDER_10:   lambda msg: self._armed(AlarmState.EXIT_COUNTDOWN_UNDER_10, msg),
+            SatelCommand.TRIGGERED:                 lambda msg: self._armed(AlarmState.TRIGGERED, msg),
+            SatelCommand.TRIGGERED_FIRE:            lambda msg: self._armed(AlarmState.TRIGGERED_FIRE, msg),
+        }
+
+        if loop:
+            loop.create_task(self.sender_worker())
+        else:
+            # loop can be null only during test-cases
+            pass
 
     @property
     def connected(self):
@@ -160,13 +246,14 @@ class AsyncSatel:
         return self._writer and self._reader
 
     async def connect(self):
+
         """Make a TCP connection to the alarm system."""
         _LOGGER.debug("Connecting...")
 
         try:
-            self._reader, self._writer = await asyncio.open_connection(
-                self._host, self._port)
-            _LOGGER.debug("sucess connecting...")
+            self._reader, self._writer = await asyncio.open_connection(self._host, self._port)
+            self._command_queue.clear()
+            _LOGGER.debug("Connected!")
 
         except Exception as e:
             _LOGGER.warning(
@@ -177,18 +264,11 @@ class AsyncSatel:
 
         return True
 
-    async def start_monitoring(self):
-        """Start monitoring for interesting events."""
-        data = generate_query(
-            b'\x7F\x01\xDC\x99\x80\x00\x04\x00\x00\x00\x00\x00\x00')
-
-        await self._send_data(data)
-
     def _zone_violated(self, msg):
 
         status = {"zones": {}}
 
-        violated_zones = list_set_bits(msg, 32)
+        violated_zones = msg.list_set_bits(0, 32)
         self.violated_zones = violated_zones
         _LOGGER.debug("Violated zones: %s", violated_zones)
         for zone in self._monitored_zones:
@@ -204,17 +284,11 @@ class AsyncSatel:
 
     def _output_changed(self, msg):
         """0x17   outputs state 0x17   + 16/32 bytes"""
-
-        status = {"outputs": {}}
-
-        output_states = list_set_bits(msg, 32)
+        output_states = msg.list_set_bits(0, 32)
         self.violated_outputs = output_states
-        _LOGGER.debug("Output states: %s, monitored outputs: %s",
-                      output_states, self._monitored_outputs)
-        for output in self._monitored_outputs:
-            status["outputs"][output] = \
-                1 if output in output_states else 0
+        _LOGGER.debug("Output states: %s, monitored outputs: %s",output_states, self._monitored_outputs)
 
+        status = {"outputs": {out: 1 if out in output_states else 0 for out in self._monitored_outputs}}
         _LOGGER.debug("Returning status: %s", status)
 
         if self._output_changed_callback:
@@ -222,28 +296,24 @@ class AsyncSatel:
 
         return status
 
-    def _command_result(self, msg):
+    def _command_result(self, msg: SatelMessage):
         status = {"error": "Some problem!"}
-        error_code = msg[1:2]
-
+        error_code = msg.msg_data[0:1]
         if error_code in [b'\x00', b'\xFF']:
             status = {"error": "OK"}
         elif error_code == b'\x01':
             status = {"error": "User code not found"}
 
-        _LOGGER.debug("Received error status: %s", status)
+        _LOGGER.debug("Received result %s", status)
         self._command_status = status
         self._command_status_event.set()
         return status
 
-    async def _send_data(self, data):
-        self._command_queue.put_nowait(data)
+    async def _send_message(self, msg):
+        self._command_queue.put_nowait(msg)
 
-    async def _send_data_internal(self, data):
-        _LOGGER.debug("-- Sending data --")
-        print_hex(data)
-        _LOGGER.debug("-- ------------- --")
-        _LOGGER.debug("Sending %d bytes...", len(data))
+    async def _send_frame(self, data):
+        _LOGGER.debug("--- Sending frame  %s", hexlify(data))
 
         if not self._writer:
             _LOGGER.warning("Ignoring data because we're disconnected!")
@@ -258,12 +328,31 @@ class AsyncSatel:
             self._reader = None
             return False
 
+    async def _read_frame(self):
+        if not self._reader:
+            return []
+
+        try:
+            data = await self._reader.readuntil(b'\xFE\x0D')
+            _LOGGER.debug("-- Received frame  %s", hexlify(data))
+            return data
+
+        except Exception as e:
+            _LOGGER.warning("Got exception: %s. Most likely the other side has disconnected!", e)
+            self._writer = None
+            self._reader = None
+
+            if self._alarm_status_callback:
+                self._alarm_status_callback()
+
+
     async def sender_worker(self):
         """Keeps sending commands from the queue and waiting for answers"""
         while not self.closed:
-            data = await self._command_queue.get()
+            msg = await self._command_queue.get()
+            frame = msg.encode_frame()
             try:
-                if await self._send_data_internal(data):
+                if await self._send_frame(frame):
                     await asyncio.wait_for(asyncio.shield(self._command_status_event.wait()), timeout=10)
                     self._command_status_event.clear()
                 self._command_queue.task_done()
@@ -274,93 +363,44 @@ class AsyncSatel:
                 self._command_queue.task_done()
                 _LOGGER.warning("Error while waiting for confirmation")
 
+    async def start_monitoring(self):
+        """Start monitoring for interesting events."""
+        data = bytearray(b'\x01\xDC\x99\x80\x00\x04\x00\x00\x00\x00\x00\x00')
+        await self._send_message(SatelMessage(SatelCommand.CMD_START_MONITORING, data))
+
     async def arm(self, code, partition_list, mode=0):
         """Send arming command to the alarm. Modes allowed: from 0 till 3."""
-        _LOGGER.debug("Sending arm command, mode: %s!", mode)
-        while len(code) < 16:
-            code += 'F'
-
-        code_bytes = bytearray.fromhex(code)
-        mode_command = 0x80 + mode
-        data = generate_query(mode_command.to_bytes(1, 'big')
-                              + code_bytes
-                              + partition_bytes(partition_list))
-
-        await self._send_data(data)
+        await self._send_message(SatelMessage(
+            SatelCommand.CMD_ARM_MODE_0 + mode,
+            code=code, partitions=partition_list))
 
     async def disarm(self, code, partition_list):
         """Send command to disarm."""
-        _LOGGER.info("Sending disarm command.")
-        while len(code) < 16:
-            code += 'F'
-
-        code_bytes = bytearray.fromhex(code)
-
-        data = generate_query(b'\x84' + code_bytes
-                              + partition_bytes(partition_list))
-
-        await self._send_data(data)
+        await self._send_message(SatelMessage(
+            SatelCommand.CMD_DISARM,
+            code=code, partitions=partition_list))
 
     async def clear_alarm(self, code, partition_list):
         """Send command to clear the alarm."""
-        _LOGGER.info("Sending clear the alarm command.")
-        while len(code) < 16:
-            code += 'F'
-
-        code_bytes = bytearray.fromhex(code)
-
-        data = generate_query(b'\x85' + code_bytes
-                              + partition_bytes(partition_list))
-
-        await self._send_data(data)
+        await self._send_message(SatelMessage(
+            SatelCommand.CMD_CLEAR_ALARM,
+            code=code, partitions=partition_list))
 
     async def set_output(self, code, output_id, state):
-        """Send output turn on command to the alarm."""
-        """0x88   outputs on
-              + 8 bytes - user code
-              + 16/32 bytes - output list"""
-        _LOGGER.debug("Turn on, output: %s, code: %s", output_id, code)
-        while len(code) < 16:
-            code += 'F'
-
-        code_bytes = bytearray.fromhex(code)
-        mode_command = 0x88 if state else 0x89
-        data = generate_query(mode_command.to_bytes(1, 'big') +
-                              code_bytes +
-                              output_bytes(output_id))
-        await self._send_data(data)
+        """Send output turn on/off command"""
+        await self._send_message(SatelMessage(
+            SatelCommand.CMD_OUTPUT_ON if state else SatelCommand.CMD_OUTPUT_OFF,
+            code=code, outputs=output_id))
 
     def _armed(self, mode, msg):
-        partitions = list_set_bits(msg, 4)
+        partitions = msg.list_set_bits(0, 4)
 
-        _LOGGER.debug("Update: list of partitions in mode %s: %s",
-                      mode, partitions)
+        _LOGGER.debug("Update: list of partitions in mode %s: %s",mode, partitions)
 
         self.partition_states[mode] = partitions
 
         if self._alarm_status_callback:
             self._alarm_status_callback()
-
-    async def _read_data(self):
-        if not self._reader:
-            return []
-
-        try:
-            data = await self._reader.readuntil(b'\xFE\x0D')
-            _LOGGER.debug("-- Receiving data --")
-            print_hex(data)
-            _LOGGER.debug("-- ------------- --")
-            return verify_and_strip(data)
-
-        except Exception as e:
-            _LOGGER.warning(
-                "Got exception: %s. Most likely the other side has "
-                "disconnected!", e)
-            self._writer = None
-            self._reader = None
-
-            if self._alarm_status_callback:
-                self._alarm_status_callback()
 
     async def keep_alive(self):
         """A workaround for Satel Integra disconnecting after 25s.
@@ -372,21 +412,16 @@ class AsyncSatel:
             await asyncio.sleep(self._keep_alive_timeout)
             if self.closed:
                 return
-            # Command to read status of the alarm
-            data = generate_query(b'\xEE\x01\x01')
-            await self._send_data(data)
+            if self.connected:
+                await self._send_message(SatelMessage(SatelCommand.DEVICE_INFO, bytearray(b'\x01\x01')))
 
     def _device_info(self, msg):
         """Dummy handler for keep_alive responses"""
         self._command_status = None
         self._command_status_event.set()
 
-    async def _update_status(self):
-        _LOGGER.debug("Wait...")
-
-        resp = await self._read_data()
-
-        if not resp:
+    def _dispatch_frame(self, frame):
+        if not frame:
             _LOGGER.warning("Got empty response. We think it's disconnect.")
             self._writer = None
             self._reader = None
@@ -394,13 +429,13 @@ class AsyncSatel:
                 self._alarm_status_callback()
             return
 
-        msg_id = resp[0:1]
-        str_msg_id = ''.join(format(x, '02x') for x in msg_id)
-        if msg_id in self._message_handlers:
-            _LOGGER.info("Calling handler for id: 0x%s", str_msg_id)
-            self._message_handlers[msg_id](resp)
-        else:
-            _LOGGER.info("Ignoring message: 0x%s", str_msg_id)
+        msg = SatelMessage.decode_frame(frame)
+        if msg:
+            if msg.cmd in self._message_handlers:
+                _LOGGER.info("Calling handler for %s", msg.cmd)
+                self._message_handlers[msg.cmd](msg)
+            else:
+                _LOGGER.info("Skipping command: %s", msg.cmd)
 
     async def monitor_status(self, alarm_status_callback=None,
                              zone_changed_callback=None,
@@ -417,7 +452,6 @@ class AsyncSatel:
         _LOGGER.info("Starting monitor_status loop")
 
         while not self.closed:
-            _LOGGER.debug("Iteration... ")
             while not self.connected:
                 _LOGGER.info("Not connected, re-connecting... ")
                 await self.connect()
@@ -431,8 +465,8 @@ class AsyncSatel:
                 await asyncio.sleep(self._reconnection_timeout)
                 continue
             while True:
-                await self._update_status()
-                _LOGGER.debug("Got status!")
+                frame = await self._read_frame()
+                self._dispatch_frame(frame)
                 if not self.connected:
                     _LOGGER.info("Got connection broken, reconnecting!")
                     break
