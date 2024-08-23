@@ -46,3 +46,12 @@ History
 ------------------
 
 * Fixed encoding 0xFE bytes in the message body
+
+0.4.6 (2024-08-23)
+------------------
+
+* queue commands and synchronise sending with received responses
+* all types of commands are grouped now (turn on, turn-off, arm, etc)
+* refactoring
+* cleanup
+* more test cases
