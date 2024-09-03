@@ -36,8 +36,6 @@ def code_bytes(code):
     return bytearray.fromhex(code.ljust(16, 'F'))
 
 
-"""Start monitoring for interesting events. (b'\x01\xDC\x99\x80\x00\x04\x00\x00\x00\x00\x00\x00') """
-
 class SatelCommand(Enum):
     ZONE_VIOLATED   = (0x00,)
     ARMED_MODE0     = (0x0A,)
@@ -90,7 +88,8 @@ class SatelCommand(Enum):
 
 class SatelMessage(object):
 
-    def __init__(self, cmd, msg_data:bytearray=None, code=None, partitions=None, outputs=None):
+    def __init__(self, cmd, msg_data:bytearray=None, code=None, partitions=None,
+                 outputs=None):
         self.cmd = cmd
         self.msg_data = msg_data if msg_data else bytearray()
         if code:
