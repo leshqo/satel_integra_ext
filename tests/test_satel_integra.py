@@ -74,6 +74,7 @@ test_frames = {
     "New data response": b'\xfe\xfe\x7f\xfe\xf0\xfb\x7f\xfb\xff\xff\xcc\xfe'
                          b'\x0d',
     "Zone 2 violated": b'\xfe\xfe\x00\x02\x00\x00\x00\x7d\x0f\xfe\x0d',
+    "Door opened": b'\xfe\xfe\x18\x00\x00\x00\x00\x08\x00\x00\x00\xee\xec\xfe\x0d'
 }
 
 
@@ -182,6 +183,23 @@ class TestSatel(TestCase):
         self.assertEqual(satel.partition_states, {AlarmState.ARMED_SUPPRESSED: []})
         satel._dispatch_frame(bytearray(test_frames["Zone 2 violated"]))
         self.assertEqual({'zones': {1: 0, 2: 1}}, zones_violated_status)
+
+    def test_frame_dispatching_doors(self):
+        satel = AsyncSatel(None, None, None, monitored_zones=[1, 2])
+        satel._dispatch_frame(bytearray(test_frames["Door opened"]))
+
+
+    def test_wait_for_response(self):
+        async def test():
+            handler = lambda msg: "OK" if msg.cmd == SatelCommand.INTEGRA_VERSION else None
+            satel = AsyncSatel(None, None, None, monitored_zones=[1, 2])
+            asyncio.get_running_loop().call_later(1,
+                lambda: satel._dispatch_frame(bytearray(test_frames["Version response"])))
+            result = await satel.wait_for_response(SatelCommand.INTEGRA_VERSION, handler, 2)
+
+            self.assertEqual(result, "OK")
+
+        asyncio.run(test())
 
 
 # def test_get_version(self):
