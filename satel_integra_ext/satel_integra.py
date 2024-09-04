@@ -69,6 +69,7 @@ class SatelCommand(Enum):
     CMD_OPEN_DOOR   = (0x8A, True)
     CMD_READ_ZONE_TEMP = (0x7D,)
     CMD_START_MONITORING = (0X7F, True)
+    CMD_DEVICE_INFO = (0xEE,)
 
     def __new__(cls, value, mergeable=False):
         obj = object.__new__(cls)
@@ -321,6 +322,7 @@ class AsyncSatel:
         zone = msg.msg_data[0], temp = int.from_bytes(msg.msg_data[-2:], byteorder='big', signed=True)
         temp = 0.5 * temp - 55
         _LOGGER.debug("Zone %d temperature received: %d", zone, temp)
+        self._command_status_event.set()
         return [zone, temp]
 
     def _doors_opened(self, msg: SatelMessage):
@@ -387,11 +389,12 @@ class AsyncSatel:
 
     async def start_monitoring(self):
         """Start monitoring for interesting events."""
-        monitored_cmds = [SatelCommand.ZONE_VIOLATED, SatelCommand.ARMED_MODE0, SatelCommand.ARMED_MODE1,
+        monitored_cmds = [SatelCommand.ZONE_VIOLATED]
+        ''', SatelCommand.ARMED_MODE0, SatelCommand.ARMED_MODE1,
                           SatelCommand.ARMED_MODE2, SatelCommand.ARMED_MODE3, SatelCommand.ARMED_SUPPRESSED,
                           SatelCommand.ENTRY_TIME, SatelCommand.EXIT_COUNTDOWN_OVER_10, SatelCommand.EXIT_COUNTDOWN_UNDER_10,
                           SatelCommand.TRIGGERED, SatelCommand.TRIGGERED_FIRE, SatelCommand.OUTPUT_STATE,
-                          SatelCommand.ZONES_BYPASSED, SatelCommand.DOORS_OPENED]
+                          SatelCommand.ZONES_BYPASSED, SatelCommand.DOORS_OPENED]'''
 
         data = partition_bytes([cmd.value + 1 for cmd in monitored_cmds], 12)
         await self._send_message(SatelMessage(SatelCommand.CMD_START_MONITORING, bytearray(data)))
@@ -537,14 +540,25 @@ class AsyncSatel:
         finally:
             self.remove_handler(response_cmd, callback)
 
-    def read_temp_and_wait(self, zone):
+    async def read_temp_and_wait(self, zone):
         """Read temperature from the zone."""
         def message_handler(msg):
             zone_received, temp = self._zone_temp_received(msg)
             return temp if zone == zone_received else None
 
-        self._send_message(SatelMessage(SatelCommand.CMD_READ_ZONE_TEMP, bytearray([zone])))
-        return self.wait_for_response(SatelCommand.ZONE_TEMP, message_handler)
+        await self._send_message(SatelMessage(SatelCommand.CMD_READ_ZONE_TEMP, bytearray([zone])))
+        return await self.wait_for_response(SatelCommand.ZONE_TEMP, message_handler)
+
+    async def read_device_info_and_wait(self, type, number):
+        def message_handler(msg):
+            if msg.msg_data[0] != type or msg.msg_data[1] != number:
+                return None
+            _LOGGER.info("Got device info: %s", msg.msg_data)
+            return msg.msg_data
+
+        await self._send_message(SatelMessage(SatelCommand.CMD_DEVICE_INFO, bytearray([type, number])))
+        return await self.wait_for_response(SatelCommand.CMD_DEVICE_INFO, message_handler)
+
 
 
 def demo(host, port):
