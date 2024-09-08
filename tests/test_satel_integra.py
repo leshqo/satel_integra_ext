@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
+
 """Tests for `satel_integra` package."""
 import asyncio
 
@@ -15,7 +19,6 @@ from satel_integra_ext.satel_integra import \
 
 # import unittest
 # from unittest.mock import MagicMock
-
 
 @pytest.fixture
 def response():
@@ -74,7 +77,9 @@ test_frames = {
     "New data response": b'\xfe\xfe\x7f\xfe\xf0\xfb\x7f\xfb\xff\xff\xcc\xfe'
                          b'\x0d',
     "Zone 2 violated": b'\xfe\xfe\x00\x02\x00\x00\x00\x7d\x0f\xfe\x0d',
-    "Door opened": b'\xfe\xfe\x18\x00\x00\x00\x00\x08\x00\x00\x00\xee\xec\xfe\x0d'
+    "Door opened": b'\xfe\xfe\x18\x00\x00\x00\x00\x08\x00\x00\x00\xee\xec\xfe\x0d',
+    "Version response 2": b'\xfe\xfe\x00\x00\x00\x20\x40\x88\xe0\x45\x02\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x59\xf0\xfe\x0d',
+    "Zone 2 temperature response": b'\xfe\xfe\x7d\x02\x00\x9e\x3e\x60\xfe\x0d'
 }
 
 
@@ -193,14 +198,39 @@ class TestSatel(TestCase):
         async def test():
             handler = lambda msg: "OK" if msg.cmd == SatelCommand.INTEGRA_VERSION else None
             satel = AsyncSatel(None, None, None, monitored_zones=[1, 2])
-            asyncio.get_running_loop().call_later(1,
+            asyncio.get_running_loop().call_later(0.1,
                 lambda: satel._dispatch_frame(bytearray(test_frames["Version response"])))
-            result = await satel.wait_for_response(SatelCommand.INTEGRA_VERSION, handler, 2)
+            result = await satel.wait_for_response(SatelCommand.INTEGRA_VERSION, handler, 0.5)
 
             self.assertEqual(result, "OK")
 
         asyncio.run(test())
 
+    def test_wait_for_response_err(self):
+        ''' error response is injuected which should lead to an exception '''
+        async def test():
+            handler = lambda msg: "OK" if msg.cmd == SatelCommand.INTEGRA_VERSION else None
+            satel = AsyncSatel(None, None, None, monitored_zones=[1, 2])
+            asyncio.get_running_loop().call_later(0.1,
+                lambda: satel._dispatch_frame(SatelMessage(SatelCommand.RESULT, bytearray(b'\x08\x01')).encode_frame()))
+            try:
+                result = await satel.wait_for_response(SatelCommand.INTEGRA_VERSION, handler, 0.5)
+            except Exception as e:
+                result = "error"
+            self.assertEqual(result, "error")
+
+        asyncio.run(test())
+
+    def test_read_temp_and_wait(self):
+        async def test():
+            satel = AsyncSatel(None, None, None)
+            asyncio.get_running_loop().call_later(0.1,
+                    lambda: satel._dispatch_frame(bytearray(test_frames["Zone 2 temperature response"])))
+            result = await satel.read_temp_and_wait(2)
+
+            self.assertEqual(result, 24)
+
+        asyncio.run(test())
 
 # def test_get_version(self):
 #     """Connect and retreive Satel Integra Version. Test bases

@@ -319,7 +319,8 @@ class AsyncSatel:
         return status
 
     def _zone_temp_received(self, msg: SatelMessage):
-        zone = msg.msg_data[0], temp = int.from_bytes(msg.msg_data[-2:], byteorder='big', signed=True)
+        zone = msg.msg_data[0]
+        temp = int.from_bytes(msg.msg_data[-2:], byteorder='big', signed=True)
         temp = 0.5 * temp - 55
         _LOGGER.debug("Zone %d temperature received: %d", zone, temp)
         self._command_status_event.set()
@@ -527,6 +528,10 @@ class AsyncSatel:
         """
         future = asyncio.get_running_loop().create_future() #asyncio.handler_called = asyncio.Event()
 
+        def err_callback(msg):
+            if msg.msg_data[0] != 0x00 and msg.msg_data[0] != 0xFF:
+                future.set_exception(Exception("Got error: %s" % msg.msg_data))
+
         def callback(msg):
             result = message_handler(msg)
             if result is not None:
@@ -534,11 +539,13 @@ class AsyncSatel:
 
         try:
             self.add_handler(response_cmd, callback)
-            return await asyncio.wait_for(future, timeout=timeout)
+            self.add_handler(SatelCommand.RESULT, err_callback)
+            return await asyncio.wait_for(future, 2.6)
         except asyncio.TimeoutError:
             raise TimeoutError("Timeout while waiting for response command %s" % response_cmd)
         finally:
             self.remove_handler(response_cmd, callback)
+            self.remove_handler(SatelCommand.RESULT, err_callback)
 
     async def read_temp_and_wait(self, zone):
         """Read temperature from the zone."""
