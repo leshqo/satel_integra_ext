@@ -1,7 +1,7 @@
 [tool]
 [tool.poetry]
 name = "satel_integra_ext"
-version = "0.4.7"
+version = "0.4.8"
 homepage = "https://github.com/leshqo/satel_integra_ext"
 description = "Communication library and basic testing tool for Satel Integra alarm system."
 
