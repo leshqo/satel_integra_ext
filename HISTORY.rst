@@ -3,6 +3,12 @@
 Changelog
 =========
 
+0.4.8 (2024-09-08)
+------------------
+
+* fixed reading temperatures
+* added reading object names
+
 0.4.7 (2024-09-03)
 ------------------
 
