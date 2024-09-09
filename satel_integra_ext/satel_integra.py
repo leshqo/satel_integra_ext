@@ -390,12 +390,11 @@ class AsyncSatel:
 
     async def start_monitoring(self):
         """Start monitoring for interesting events."""
-        monitored_cmds = [SatelCommand.ZONE_VIOLATED]
-        ''', SatelCommand.ARMED_MODE0, SatelCommand.ARMED_MODE1,
+        monitored_cmds = [SatelCommand.ZONE_VIOLATED, SatelCommand.ARMED_MODE0, SatelCommand.ARMED_MODE1,
                           SatelCommand.ARMED_MODE2, SatelCommand.ARMED_MODE3, SatelCommand.ARMED_SUPPRESSED,
                           SatelCommand.ENTRY_TIME, SatelCommand.EXIT_COUNTDOWN_OVER_10, SatelCommand.EXIT_COUNTDOWN_UNDER_10,
                           SatelCommand.TRIGGERED, SatelCommand.TRIGGERED_FIRE, SatelCommand.OUTPUT_STATE,
-                          SatelCommand.ZONES_BYPASSED, SatelCommand.DOORS_OPENED]'''
+                          SatelCommand.ZONES_BYPASSED, SatelCommand.DOORS_OPENED]
 
         data = partition_bytes([cmd.value + 1 for cmd in monitored_cmds], 12)
         await self._send_message(SatelMessage(SatelCommand.CMD_START_MONITORING, bytearray(data)))
