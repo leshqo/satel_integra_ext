@@ -235,7 +235,9 @@ class AsyncSatel:
             SatelCommand.ARMED_MODE1:               [lambda msg: self._armed(AlarmState.ARMED_MODE1, msg)],
             SatelCommand.ARMED_MODE2:               [lambda msg: self._armed(AlarmState.ARMED_MODE2, msg)],
             SatelCommand.ARMED_MODE3:               [lambda msg: self._armed(AlarmState.ARMED_MODE3, msg)],
-            SatelCommand.ARMED_SUPPRESSED:          [lambda msg: self._armed(AlarmState.ARMED_SUPPRESSED, msg)],
+            # for INTEGRA v1.12 (released 2013-11-29) and newer, both 0x09 and 0x0A commands indicate
+            # really armed partitions, regardless of suppression arm status time
+            SatelCommand.ARMED_SUPPRESSED:          [lambda msg: self._armed(AlarmState.ARMED_MODE0, msg)],
             SatelCommand.ENTRY_TIME:                [lambda msg: self._armed(AlarmState.ENTRY_TIME, msg)],
             SatelCommand.EXIT_COUNTDOWN_OVER_10:    [lambda msg: self._armed(AlarmState.EXIT_COUNTDOWN_OVER_10, msg)],
             SatelCommand.EXIT_COUNTDOWN_UNDER_10:   [lambda msg: self._armed(AlarmState.EXIT_COUNTDOWN_UNDER_10, msg)],
