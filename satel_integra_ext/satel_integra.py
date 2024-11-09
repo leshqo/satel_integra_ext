@@ -98,7 +98,7 @@ class SatelMessage(object):
         if partitions:
             self.msg_data += partition_bytes(partitions, 4)
         if outputs:
-            self.msg_data += partition_bytes([outputs], 32)
+            self.msg_data += partition_bytes(outputs, 32)
 
     def compare_cmd(self, other):
         return self.cmd == other.cmd
@@ -323,8 +323,8 @@ class AsyncSatel:
     def _zone_temp_received(self, msg: SatelMessage):
         zone = msg.msg_data[0]
         temp = int.from_bytes(msg.msg_data[-2:], byteorder='big', signed=True)
-        temp = 0.5 * temp - 55
-        _LOGGER.debug("Zone %d temperature received: %d", zone, temp)
+        temp = 0.5 * temp - 55.0
+        _LOGGER.debug("Zone %d temperature received: %.1f", zone, temp)
         self._command_status_event.set()
         return [zone, temp]
 
@@ -423,7 +423,7 @@ class AsyncSatel:
         """Send output turn on/off command"""
         await self._send_message(SatelMessage(
             SatelCommand.CMD_OUTPUT_ON if state else SatelCommand.CMD_OUTPUT_OFF,
-            code=code, outputs=output_id))
+            code=code, outputs=[output_id]))
 
     async def read_temp(self, zone):
         """Read temperature from the zone."""
